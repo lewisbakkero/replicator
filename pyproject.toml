@@ -1,0 +1,51 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mcps"
+version = "0.1.0"
+description = "MultiCloud Photo Sync — deduplicated bidirectional replication between AWS S3 and GCS, plus pull-only Google Drive import."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Proprietary" }
+authors = [
+    { name = "photosync maintainers" },
+]
+dependencies = [
+    "boto3",
+    "google-cloud-storage",
+    "google-api-python-client",
+    "google-auth",
+    "pyyaml",
+    "tomli",
+    "tomli-w",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "hypothesis",
+    "moto[s3]",
+    "pytest-cov",
+]
+
+[project.scripts]
+mcps = "mcps.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["mcps*"]
+exclude = ["tests*"]
+
+[tool.pytest.ini_options]
+minversion = "7.0"
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+markers = [
+    "property: property-based tests using Hypothesis",
+    "integration: integration tests that exercise real or in-process provider fakes",
+    "smoke: minimal CLI smoke tests",
+]

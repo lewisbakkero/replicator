@@ -1,0 +1,74 @@
+# mcps configuration file.
+#
+# Generated as part of migration step 4 (see MIGRATION.md). This file is the
+# operator-facing knob for `mcps`; the schema and field semantics are
+# documented in:
+#
+#   .kiro/specs/multicloud-photo-sync/design.md  ("Migration Plan", "Data Models")
+#   .kiro/specs/multicloud-photo-sync/requirements.md
+#
+# All required top-level sections (sources, replication, duplicates, photos,
+# retries, runtime) MUST be present per requirement 17.4. Field ranges and
+# enum values are enforced by `mcps/config/model.py`; unknown keys are
+# rejected by `mcps/config/parser.py` with a best-effort line number.
+#
+# This template intentionally does NOT contain credentials. AWS credentials
+# come from the standard AWS credential chain (env vars, named profile,
+# instance role); the Drive service-account file is referenced via
+# GOOGLE_APPLICATION_CREDENTIALS. See MIGRATION.md steps 1 and 2.
+
+sources:
+  # Amazon S3 source — the bucket the legacy `uploader.py` wrote into.
+  # The bucket name is recovered from the legacy `config.ini` / `uploader.py`
+  # (`s3_bucket = 'pickbackup'`); region defaults to us-east-1 because the
+  # legacy code constructed `boto3.client('s3', ...)` without an explicit
+  # region, which boto3 resolves to us-east-1 unless overridden by the
+  # environment. Override here if the bucket actually lives elsewhere.
+  - name: s3-pickbackup
+    kind: s3
+    bucket: pickbackup
+    region: us-east-1
+
+  # Google Drive pull-only source — the `Marta` folder the legacy
+  # `uploader.py` listed (see `google_drive_folder_name = 'Marta'`).
+  # The folder id is NOT recoverable from the legacy code (which looked
+  # up the folder by name), so the operator MUST supply it before the
+  # first run. Replace the placeholder below with the real folder id;
+  # `mcps` exits with DRIVE_ACCESS_FAILED (75) if the id is wrong or
+  # the service account does not have Viewer access.
+  - name: drive-marta
+    kind: google_drive
+    drive_root_folder_id: <drive-folder-id>
+
+replication:
+  # Empty until the operator adds a second writable Source (e.g. a GCS
+  # bucket). The legacy one-way Drive→S3 flow runs through Drive_Importer
+  # alone, so `pairs: []` keeps the Replicator a no-op until then.
+  pairs: []
+  on_key_conflict: skip
+  fail_on_conflict: false
+  delete_propagation: none
+  tombstone_retention_days: 30
+  fail_on_inconsistency: false
+
+duplicates:
+  # `s3-pickbackup` wins ties because it is the only writable Source today.
+  # Re-rank when a second replicated Source is added.
+  canonical_source_priority:
+    - s3-pickbackup
+  quarantine_retention_days: 30
+
+photos:
+  drive_source: drive-marta
+  drive_destination: s3-pickbackup
+
+retries:
+  max_retries: 5
+  initial_backoff_ms: 500
+  max_backoff_ms: 30000
+  request_timeout_ms: 30000
+
+runtime:
+  catalog_path: ./mcps.catalog.jsonl
+  manifest_dir: ./manifests
+  max_concurrent_transfers: 4

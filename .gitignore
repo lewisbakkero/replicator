@@ -1,0 +1,32 @@
+# mcps secrets and runtime artefacts
+config.ini
+credentials.json
+*.service-account.json
+mcps.catalog.jsonl
+mcps.catalog.jsonl.lock
+manifests/
+logfile.log
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+build/
+dist/
+
+# Test / type-check / property-test caches
+.pytest_cache/
+.hypothesis/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Virtualenvs / local env files
+.venv/
+venv/
+.env
+
+# OS / editor cruft
+.DS_Store
