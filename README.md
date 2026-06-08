@@ -15,6 +15,8 @@ This is a successor to the `uploader.py` / `delete.py` / `config.ini` setup that
 ## Table of contents
 
 - [Quickstart](#quickstart)
+- [New environment quick-start](#new-environment-quick-start)
+- [Files NOT in git](#files-not-in-git)
 - [Installation](#installation)
 - [Credentials](#credentials)
 - [Configuration](#configuration)
@@ -55,6 +57,130 @@ mcps --config mcps.config.yaml --apply --first-pass-confirmed --auto-approve
 ```
 
 After step 6 finishes cleanly with exit code 0, the system is in steady state and subsequent runs (cron / systemd) need only `--apply --auto-approve`.
+
+---
+
+## New environment quick-start
+
+The repo on GitHub is a **clean clone** — it does not and cannot contain credentials or any per-environment values. Setting up a fresh laptop (or a fresh VM, or a fresh container image) requires you to bring six things from outside the repo: AWS credentials, a Google service-account JSON file, the Drive folder id, the S3 bucket name, the bucket region, and (optionally) any local backup tarballs from a previous environment.
+
+### Step-by-step
+
+```bash
+# 1. Clone and install.
+git clone https://github.com/lewisbakkero/replicator.git mcps
+cd mcps
+python3 -m pip install -e ".[dev]"
+
+# 2. Confirm the install works (no provider calls, just argparse).
+mcps --help
+
+# 3. Wire AWS credentials. Pick one of:
+#    a) Named profile (preferred):
+aws configure --profile mcps
+export AWS_PROFILE=mcps
+#    b) Env vars (one-off):
+export AWS_ACCESS_KEY_ID=AKIA...           # your rotated key
+export AWS_SECRET_ACCESS_KEY=...           # your rotated secret
+#    c) Instance role (EC2/ECS/IRSA): nothing to do, mcps picks it up automatically.
+
+# 4. Confirm AWS auth works:
+aws sts get-caller-identity
+
+# 5. Wire Google Drive credentials (service-account JSON file):
+install -d -m 0700 "$HOME/.config/mcps"
+# Copy the service-account JSON to the canonical location:
+cp /path/to/your/drive-service-account.json "$HOME/.config/mcps/drive-service-account.json"
+chmod 600 "$HOME/.config/mcps/drive-service-account.json"
+export GOOGLE_APPLICATION_CREDENTIALS="$HOME/.config/mcps/drive-service-account.json"
+# Make this persistent in your shell rc:
+echo 'export GOOGLE_APPLICATION_CREDENTIALS="$HOME/.config/mcps/drive-service-account.json"' >> ~/.zshrc
+
+# 6. Edit the committed mcps.config.yaml template to fill in the
+#    placeholders (sources[].bucket, sources[].drive_root_folder_id):
+$EDITOR mcps.config.yaml
+
+# 7. Smoke-test with a dry-run.
+mcps --config mcps.config.yaml --dry-run
+
+# 8. Steady-state apply.
+mcps --config mcps.config.yaml --apply --auto-approve
+```
+
+### Cold_Start vs. fresh-environment
+
+A fresh environment by itself is not a Cold_Start — what makes a run a Cold_Start is the absence of `mcps.catalog.jsonl` on disk. If you bring the catalog file from your previous machine (rsync `mcps.catalog.jsonl` from old host to new) the new run uses it, skips re-hashing, and is fast. If you don't, the new environment runs as Cold_Start: it streams every Source's bytes once to compute SHA-256s, then proceeds normally.
+
+For multi-machine operation: only **one machine at a time** should run `--apply` against the same configuration, because the writer-lock file is per-host. If two hosts pointed at the same Catalog path on different filesystems both ran `--apply` simultaneously, the locks would not see each other and you'd race the Catalog write. Either run from one host, or shard by configuration (different bucket, different `runtime.catalog_path`).
+
+---
+
+## Files NOT in git
+
+By design, several files exist outside source control. The `.gitignore` blocks them from being committed even by accident. Here is the exhaustive list, grouped by where they belong on disk and why.
+
+### Mandatory secrets (must be brought from outside the repo)
+
+| Path | Source | Notes |
+| --- | --- | --- |
+| `~/.config/mcps/drive-service-account.json` | Google Cloud Console — IAM & Admin → Service Accounts → Keys → "Create new key" (JSON) | The Google Drive service-account file. Must be readable only by your user (`chmod 600`); parent directory `0700`. The service account must be **shared as Viewer** on the Drive root folder. |
+| `~/.aws/credentials` (or env vars `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`, or an EC2/ECS instance role) | AWS Console — IAM → Users → Security credentials → Create access key | Required for the boto3 chain. Must have the S3 permissions documented in `MIGRATION.md` Step 1. |
+
+### Per-environment configuration (must be edited locally)
+
+| Path | What you fill in | Default in repo |
+| --- | --- | --- |
+| `mcps.config.yaml` | `sources[].bucket` (your S3 bucket name), `sources[].region` (the AWS region of that bucket), `sources[].drive_root_folder_id` (the long alphanumeric id from your Drive folder URL), `replication.pairs` (only if you have a second writable Source) | The committed template carries placeholder values for every site-specific field. The values shipped in the repo are not secrets but they are likely wrong for your account. |
+
+### Runtime artefacts (created by `mcps`, never committed)
+
+These appear automatically once you start running `mcps`. None are secrets, but the `.gitignore` keeps them out of git because they are runtime state, not source.
+
+| Path | Purpose | Per-host? |
+| --- | --- | --- |
+| `mcps.catalog.jsonl` | The on-disk Catalog. One JSONL line per `(source, key)`. Atomically rewritten at the end of every Sync_Run. | Yes — each host computes its own. Bring it across hosts to avoid re-hashing on Cold_Start. |
+| `mcps.catalog.jsonl.lock` | The `fcntl.flock`-held lock file for the Catalog. Records the holder PID + run id. Auto-released and unlinked on clean exit. | Yes |
+| `manifests/manifest-<UTC>-<run-id>.jsonl` | Per-run JSONL Manifest with every action (DISCOVERED / REPLICATE / QUARANTINE / DRIVE_IMPORT / SUMMARY). | Yes |
+| `manifests/reconciliation-<UTC>-<run-id>.txt` | Cold_Start review report. Only written on Cold_Start runs. | Yes |
+| `logfile.log` | Legacy uploader log. Ignored by `mcps`; kept here only because your historical working tree contains one. | Yes |
+
+### Legacy files preserved on the original host (NOT used by `mcps`, kept for the migration plan only)
+
+| Path | Why it's still around |
+| --- | --- |
+| `config.ini` | Legacy plaintext-credential file. `mcps`'s legacy guard refuses to start while this file is present in the working tree — this is enforced by req 1.5 and tested by `tests/smoke/test_legacy_config_detected.py`. The migration plan (`MIGRATION.md` Step 6a) is to back this up outside the working tree (e.g. `~/.local/state/mcps/legacy-backups/`) and then `rm -f config.ini`. The file is also `.gitignore`'d defensively. |
+| `credentials.json` | Legacy in-repo Google service-account file. Already relocated to `~/.config/mcps/drive-service-account.json`; the in-repo copy is preserved during the migration as a rollback path and removed in `MIGRATION.md` Step 6b. The file is `.gitignore`'d. |
+| `delete.py`, `uploader.py`, `delete_list.txt` | Legacy scripts replaced by the `mcps` package. Removed in `MIGRATION.md` Step 6b. |
+
+### Local helper / inspection scripts (never checked in)
+
+These are one-shot tools that get written during operational triage and then deleted. They never go to git because they would risk re-introducing credential-handling code paths into the repo that the production package doesn't need.
+
+| Pattern | Purpose |
+| --- | --- |
+| `inspect_s3.py`, `inspect_drive.py`, `inspect_multipart.py`, `pre_wipe_check.py`, `verify_backup.py`, `wipe_s3.py`, `run_dry.py`, `run_recopy.py`, `backup_s3_only_singlepart.py`, `backup_s3_multipart.py`, `check_multipart_drive.py`, etc. | One-off inspection / rescue / migration scripts. Source AWS credentials from `~/.local/state/mcps/legacy-backups/config.ini.stashed`. Delete after use. |
+| `dry_run.log`, `recopy.log`, `backup_multipart.log`, `check_multipart.log` | Run output logs from the helpers. |
+| `s3_only_keys.txt`, `multipart_check_result.json`, `drive_streamed_shas.txt`, `mcps.s3only.config.yaml` | Inspection output. Deletable after the migration completes. |
+
+### Generated by Python tooling (always ignored)
+
+| Pattern | Source |
+| --- | --- |
+| `__pycache__/`, `*.py[cod]` | Python bytecode caches |
+| `mcps.egg-info/` | Setuptools-generated install metadata |
+| `.pytest_cache/`, `.hypothesis/` | Test framework caches |
+| `build/`, `dist/`, `htmlcov/`, `.coverage` | Build / coverage artefacts |
+| `.venv/`, `venv/`, `.env` | Local virtualenvs and shell-env overrides |
+| `.DS_Store` | macOS Finder metadata |
+
+### Optional: local recovery backup (not in git, may not exist on a fresh laptop)
+
+| Path | What it contains |
+| --- | --- |
+| `~/Desktop/photosync-s3-backup/singlepart/` | (Migration-only, optional) Local backup of every S3-only single-part key prior to wipe. Created by `backup_s3_only_singlepart.py`. Includes a SHA-256 manifest. |
+| `~/Desktop/photosync-s3-backup/multipart/` | (Migration-only, optional) Local backup of every multipart-ETag S3 object prior to wipe. Created by `backup_s3_multipart.py`. Includes a SHA-256 manifest. |
+
+These are insurance, not configuration. If you wipe and re-copy on the original machine they may exist; on a brand-new laptop they don't, and you don't need them unless something went wrong on the original migration.
 
 ---
 
