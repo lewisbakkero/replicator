@@ -70,7 +70,18 @@ The repo on GitHub is a **clean clone** — it does not and cannot contain crede
 # 1. Clone and install.
 git clone https://github.com/lewisbakkero/replicator.git mcps
 cd mcps
-python3 -m pip install -e ".[dev]"
+
+# Modern Python distributions (Homebrew Python 3.12+, recent Linux
+# distros) mark the system site-packages as externally managed
+# (PEP 668), so install into a virtualenv rather than system-wide.
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -e ".[dev]"
+
+# Subsequent shells need to re-activate the venv before running mcps:
+#   source .venv/bin/activate
+# Or run the absolute path:
+#   .venv/bin/mcps --help
 
 # 2. Confirm the install works (no provider calls, just argparse).
 mcps --help
@@ -189,10 +200,17 @@ These are insurance, not configuration. If you wipe and re-copy on the original 
 `mcps` is a standalone Python 3.10+ package. From the repo root:
 
 ```bash
+python3 -m venv .venv
+source .venv/bin/activate
 pip install -e ".[dev]"
 ```
 
-This installs `mcps` as a console script and pulls in the dev extras (`pytest`, `hypothesis`, `moto`, `pytest-cov`). For production-only installs drop the `[dev]` extras.
+The `venv` step is required on modern Python distributions because
+`pip` refuses to install into the system site-packages (PEP 668).
+
+This installs `mcps` as a console script and pulls in the dev extras
+(`pytest`, `hypothesis`, `moto`, `pytest-cov`). For production-only
+installs drop the `[dev]` extras.
 
 The `mcps` console script is registered via `pyproject.toml`. `python -m mcps` also works and is what the smoke tests exercise.
 
